@@ -1,0 +1,313 @@
+---
+title: "1C_assignment_2"
+author: "Constantina Maltezou"
+format: html
+editor: visual
+---
+
+# First Quarto assignment for 1C web scraping course
+
+## Instructions on "Economic Performance and Democracy"
+
+We want to know whether a higher GDP per capita is indicative of a better quality democracy. To find this out, you should collect the numbers for all countries for different democracy indices and the GDP (nominal) per capita. First, collect the tables containing the relevant information from these websites (note they are fixed versions of Wikipedia, to make sure nothing changes):
+
+-   List of countries by GDP (nominal) per capita
+-   Democracy indices (V-Dem)
+-   The Economist Democracy Index
+-   Bertelsmann Transformation Index
+
+You need to first create a database that contains the information from the democracy indices.
+
+1.  Create a local SQLite database.
+2.  Create a table for each table you collect, making sure the data types are correct.
+3.  Write a query that combines the data in your analysis dataset you aim to run your analysis on.
+
+Additionally, to what is already there, we want one average measure from the different cate- gories for each index and bring them on the same scale (e.g., from 0 (lowest) to 1 (highest)). We can add the GDP data to a table as is. 
+
+Finally, you should produce a plot that:
+
+-   Shows the GDP per capita on the x-axis.
+-   Shows the average (across indices for most recent year) democracy score on the y-axis.
+-   Differentiates between the 3 indices using differently coloured dots. 
+
+Make sure to include the code for all steps in the main document and describe what the code does.
+
+## Running Code
+
+To complete this assignment, I used the following libraries.
+
+```{r}
+# Loading all relevant libraries
+
+library(tidyverse)
+library(rvest)
+library(janitor)
+library(DBI)
+library(RSQLite)
+library(ggplot2)
+
+# to print all columns instead of truncating them when I want to print my tables.
+options(dplyr.width = Inf)
+
+```
+
+The first step is to use the browser's built-in inspection feature to identify the html elements that contain the data table I need per url. Then, I can proceed with retrieving them, and store each in a dataframe.
+
+```{r}
+
+data_url <- c( 
+  "https://en.wikipedia.org/w/index.php?title=List_of_countries_by_GDP_(nominal)_per_capita&oldid=1300907718",
+  "https://en.wikipedia.org/w/index.php?title=V-Dem_Democracy_Indices&oldid=1290801077",
+  "https://en.wikipedia.org/w/index.php?title=The_Economist_Democracy_Index&oldid=1300109328",
+  "https://en.wikipedia.org/w/index.php?title=Bertelsmann_Transformation_Index&oldid=1289728695"
+)
+
+get_wikitable <- function(url, table_position) { 
+  table <- read_html(url) |> 
+    html_elements(".wikitable") |> 
+    html_table() |>
+    pluck(table_position)
+  
+  return (table) 
+}
+
+table_gdp   <- get_wikitable(data_url[1], 1)
+table_vdem  <- get_wikitable(data_url[2], 1)
+table_economist  <- get_wikitable(data_url[3], 4)
+table_bertelsmann  <- get_wikitable(data_url[4], 1)
+
+```
+
+Now that I have each table stored as a dataframe, I can go ahead and clean their data before storing them as SQL tables. Clean-up steps followed:
+
+- I turn everything into lowercase for safer comparisons and checks.
+- Replacing white spaces with underscores for the headings, and in the case of tables with multi-row headings, I combine them into one cell, without naming duplicates.
+- I remove footnote numbers surrounded by square brackets.
+- I replace any double and single dash values with NAs.
+- I convert all scores into a double numerical type, and bringing the bertelsmann and economist scores (highest 10) on the same scale as vdem (lowest 0; highest 1) by dividing by 10.
+- After finishing up with overall clean-up, I create a new column for vdem and bertelsmann indices showing the mean score of their group of indices of their latest recorded year.
+
+```{r}
+
+combine_column_names_with_first_row <- function(df) {
+  df <- clean_up_column_names(df)
+  
+  first_row_subheadings <- as.character(df[1, ])
+  first_row_subheadings <- clean_up_column_names(first_row_subheadings)
+  use_current_column_names <- is.na(first_row_subheadings) | tolower(first_row_subheadings) == tolower(names(df))
+  
+  updated_column_names <- ifelse(use_current_column_names, names(df), paste(names(df), first_row_subheadings, sep = "_")) |>
+    str_replace_all("\\d", "") |>
+    make_clean_names()
+  
+  names(df) <-updated_column_names
+  return (df |> slice(-1))
+}
+
+clean_up_column_names <- function(input, column_prefix = "year") {
+  if (is.data.frame(input)) {
+  names(input) <- names(input) |> 
+    str_replace_all("\\[[^\\]]*\\]", "") |> # to remove footnotes
+    str_squish() |>
+    str_replace("^(\\d{4})", paste0(column_prefix, "_\\1")) |>
+    paste(sep = "_") |>
+    make_clean_names()
+  
+  }
+  else {
+    input <- input |> 
+      str_replace_all("/", "") |>
+      str_squish() |>
+      paste(sep = "_") |>
+      make_clean_names()
+  }
+  return (input)
+}
+
+indicate_NA_cells <- function(df){
+  df <- df |>
+  mutate(
+    across(
+      where(is.character),
+      function(x) {
+        x |>
+          str_replace_all("\\[[^\\]]*\\]", "") |> # to remove footnotes
+          str_squish() |>
+          na_if("—") |>
+          na_if("-")
+      }
+    )
+  )
+  return (df)
+}
+
+parse_numeric_cells <- function(df, columns_to_skip = 1) {
+  df <- df |>
+  mutate(
+    across(
+      -c(1:columns_to_skip),                                
+      function(value) { parse_number(as.character(value)) }
+    )
+  )
+  return (df)
+}
+
+scale_numeric_data <- function(df) {
+  df <- df |>
+    mutate(
+      across(
+        where(is.double), 
+        function(value) { value / 10 }
+      )
+    )
+  return (df)
+}
+
+table_gdp_cleaned <- table_gdp |> 
+  combine_column_names_with_first_row() |> 
+  indicate_NA_cells() |> 
+  parse_numeric_cells() |> 
+  mutate(across(where(is.character), str_to_lower)) |>
+  rename(country = country_territory) |> 
+  filter(country != "World")
+
+table_vdem_cleaned <- table_vdem |> 
+  combine_column_names_with_first_row() |> 
+  indicate_NA_cells() |> 
+  parse_numeric_cells() |>
+  mutate(
+    across(where(is.character), str_to_lower),
+    vdem_2024_index_avg = rowMeans(across(c("democracy_indices_electoral", "democracy_indices_liberal")), na.rm = TRUE)
+  )
+
+table_economist_cleaned <- table_economist |> 
+  clean_up_column_names(column_prefix = "economist") |> 
+  indicate_NA_cells() |> 
+  parse_numeric_cells(columns_to_skip = 4) |>
+  mutate(across(where(is.character), str_to_lower)) |>
+  scale_numeric_data()
+
+table_bertelsmann_cleaned <- table_bertelsmann |> 
+  clean_up_column_names() |>
+  indicate_NA_cells() |> 
+  parse_numeric_cells() |>
+  scale_numeric_data() |>
+  mutate(
+    across(where(is.character), str_to_lower),
+    bertelsmann_2022_index_avg = rowMeans(across(c("status_index_2022", "governance_index_2022")), na.rm = TRUE)
+  )
+
+```
+
+Now that everything's been cleaned-up and organised appropriately, it's time to create an SQL database that contains the information from the democracy indices. Each dataframe is turned into an SQL table.
+
+```{r}
+db <- dbConnect(SQLite(), "db.sql")
+
+dbWriteTable(db, "gdp_per_capita", table_gdp_cleaned,  overwrite = TRUE)
+dbWriteTable(db, "vdem_indices", table_vdem_cleaned, overwrite = TRUE)
+dbWriteTable(db, "economist_indices", table_economist_cleaned, overwrite = TRUE)
+dbWriteTable(db, "bertelsmann_indices", table_bertelsmann_cleaned,  overwrite = TRUE)
+
+dbListTables(db)
+
+```
+
+As a next step, I'm creating a new SQL table containing only the columns I need for my plots by joining together all existing SQL table data by country as the unique identifier (common across tables).
+
+```{r}
+
+# just because I keep re-running this block of code
+dbExecute(db, "DROP TABLE IF EXISTS analysis_dataset")
+
+dbExecute(db, "
+  CREATE TABLE analysis_dataset (
+    country VARCHAR PRIMARY KEY,
+    imf_estimate INTEGER,
+    world_bank_estimate INTEGER,
+    un_estimate INTEGER,
+    economist_2024 REAL,
+    bertelsmann_2022_index_avg REAL,
+    vdem_2024_index_avg REAL
+  )")
+
+dbExecute(db, "
+  INSERT INTO analysis_dataset
+  SELECT
+    gdp_per_capita.country                                    AS country,
+    CAST(gdp_per_capita.imf_estimate AS INTEGER)              AS imf_estimate,
+    CAST(gdp_per_capita.world_bank_estimate AS INTEGER)       AS world_bank_estimate,
+    CAST(gdp_per_capita.united_nations_estimate AS INTEGER)   AS un_estimate,
+    economist_indices.economist_2024                          AS economist_2024,
+    bertelsmann_indices.bertelsmann_2022_index_avg            AS bertelsmann_2022_index_avg,
+    vdem_indices.vdem_2024_index_avg                          AS vdem_2024_index_avg
+  FROM gdp_per_capita
+  LEFT JOIN economist_indices
+    ON economist_indices.country = gdp_per_capita.country
+  LEFT JOIN bertelsmann_indices
+    ON bertelsmann_indices.country = gdp_per_capita.country
+  LEFT JOIN vdem_indices
+    ON vdem_indices.country = gdp_per_capita.country
+")
+
+dbListTables(db)
+
+dbGetQuery(db, "SELECT * FROM analysis_dataset LIMIT 5")
+
+```
+
+Time to retrieve all the relevant data in preparation for plotting, while also removing any data with missing values. Renaming the imf_estimate in this instance as GDP_per_capita for a more suitable x-axis title.
+
+The data is turned into a long format, i.e., one column per score category, and then grouping those category names and values under "indices" (legend title) and "score" (y-axis title).
+
+```{r}
+
+df_to_plot <- dbGetQuery(db, "
+  SELECT 
+    country, 
+    imf_estimate AS GDP_per_capita, 
+    economist_2024, 
+    bertelsmann_2022_index_avg, 
+    vdem_2024_index_avg 
+  FROM analysis_dataset
+  WHERE 
+    country IS NOT NULL AND 
+    imf_estimate IS NOT NULL AND 
+    economist_2024 IS NOT NULL AND 
+    bertelsmann_2022_index_avg IS NOT NULL AND 
+    vdem_2024_index_avg IS NOT NULL
+")
+
+df_to_plot_long <- df_to_plot |>
+  pivot_longer(
+    cols = c("economist_2024", "bertelsmann_2022_index_avg", "vdem_2024_index_avg"),
+    names_to = "Indices",
+    values_to = "Score"
+  )
+
+```
+
+Finally, it's time to plot the average scores per country for the most recent year per index group, based on the IMF estimate for the GDP per capita, to answer the assignment question of whether a higher GDP per capita is indicative of a better quality democracy.
+
+```{r}
+
+ggplot(df_to_plot_long) +
+  geom_point(aes(x = GDP_per_capita, y = Score, colour = Indices))
+
+
+ggplot(df_to_plot_long,
+       aes(x = GDP_per_capita, y = Score, colour = Indices)) +
+  geom_smooth(method = "lm", formula = y ~ x)
+
+
+```
+After visually inspecting these two plots, they seem to indicate that: 
+
+- Countries with higher GDP per capita tend to have higher democracy scores on average, across all three indices.
+- Bertelsmann's average scores for countries tend to start from a higher baseline than the other two indices.
+- The economist's scores fall somewhat in the middle.
+- V-Dem average scores tend to start from the lowest baseline.
+
+```{r}
+dbDisconnect(db)
+```
