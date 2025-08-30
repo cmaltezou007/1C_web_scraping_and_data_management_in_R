@@ -10,6 +10,6 @@ The html files were rendered from the Quarto (.qmd) files, and contain the full 
 ## Getting started
 
 - Clone/pull this repository.
-- Restore the exact package versions I used in these assignments (for reproducibility purposes) by typing renv::restore() in R / RStudio from the project root folder. This loads the renv.lock file (if not done automatically). You may have to install.packages("renv") first. 
+- Restore the exact package versions I used in these assignments (for reproducibility purposes) by typing `renv::restore()` in R / RStudio from the project root folder. This loads the renv.lock json file (if not done automatically). You may have to `install.packages("renv")` first. 
 - The renv.lock file applies to both assignments.
 - You can find the R version used (4.5.1) inside the renv.lock file too.
