@@ -1,0 +1,80 @@
+---
+title: "1C_assignment_1"
+author: "Constantina Maltezou"
+format: html
+editor: visual
+---
+
+# First Quarto assignment for 1C web scraping course
+
+## Instructions
+
+Look at the website of the Essex Summer School in Social Science Data Analysis. Say we wanted to scrape all Course titles from it and store them in a table alongside their:
+
+-   URLs and
+-   course description
+
+Write code to extract the necessary information and present everything in a report using literate programming (either Quarto/RMarkdown or copy code and text together in some other way).
+
+## Running Code
+
+To complete this assignment, I used the following libraries.
+
+```{r}
+# Loading all relevant libraries
+
+library(tidyverse)
+library(rvest)
+
+```
+
+The first step is to identify and retrieve the ESS webpage that contains the list of courses with their titles and url, which I examined its html by using the browser built-in inspection feature to find the relevant html elements that hold each course title and url link.
+
+With these selector "article h2:nth-of-type(2) \~ p a", I was basically looking to retrieve the link elements "a" inside the paragraphs that follow after the 2nd heading element "h2", because the earlier information is irrelevant. The link elements contain the url for the course description, and the text for the course title.
+
+```{r}
+
+# 1. Request & collect raw html
+courses_html_page <- read_html("https://essexsummerschool.com/summer-school-facts/courses/ess-2025-course-list/")
+  
+course_links_list <- courses_html_page |>
+  html_elements("article h2:nth-of-type(2) ~ p a")
+
+all_courses <- tibble(
+  title = html_text2(course_links_list),
+  url   = html_attr(course_links_list, "href")
+)
+
+all_courses <- all_courses %>%
+  filter(title != "IADS")
+
+```
+
+Now that I have the preliminary information I need (course titles and url links) stored in a tibble, I take the course url per row and pretty much repeat the earlier process of accessing the html and retrieving the course description from the relevant html elements through the get_course_description function. The cleaned course description text output from that function is mapped to the matching course row in the tibble
+
+The reason I applied the selectors "article#mds-course-description \> p" was because I wanted to exclude the div containing the course's "intro-text", which is of no interest here, and get only the paragraphs that are nested directly inside the article element with an id "mds-course-description".
+
+html_text2() cleans up the text from any unnecessary white spaces, etc and displays it as one would view it on a browser. The final step of paste(), simply concatenates the vector output of html_text2() into a single string.
+
+Finally, the complete information is displayed as a tibble.
+
+```{r}
+
+get_course_description <- function(url) {
+  course_description_html_page <- read_html(url)
+  
+  course_description_text <- course_description_html_page |>
+    html_elements("article#mds-course-description > p") |>
+    html_text2() |>
+    paste(collapse = " ")
+  
+  return (course_description_text)
+}
+
+all_courses <- all_courses |>
+  mutate(description = map_chr(url, get_course_description))
+
+all_courses
+
+ 
+```
